@@ -44,3 +44,46 @@ VITE_API_URL=https://your-render-backend-url.onrender.com
 - This will be your Render backend URL
 - Format: `https://your-app-name.onrender.com`
 - Replace `your-app-name` with your actual Render service name
+
+## Optional: Trip Enrichment (Flights, Hotels, Activities)
+
+When generating a trip plan, the app can enrich the itinerary with real data from external APIs. If these variables are **not set**, the app still works: Gemini placeholders are used for flights, hotels, and activities.
+
+### AMADEUS_API_KEY and AMADEUS_API_SECRET
+- Used for **flight** search (Amadeus test environment).
+- Get them at [Amadeus for Developers](https://developers.amadeus.com/) (create an app, use test credentials).
+- If both are missing, flight recommendations remain AI-generated placeholders.
+
+### LITEAPI_KEY
+- Used for **hotel** search (LiteAPI).
+- Get a key at [LiteAPI Travel](https://www.liteapi.travel/) (free trial available).
+- If missing, hotel recommendations remain AI-generated placeholders.
+
+### OPENTRIPMAP_API_KEY
+- Used for **activities / points of interest** (OpenTripMap).
+- Get a free API key at [OpenTripMap](https://dev.opentripmap.org/).
+- If missing, activity recommendations remain AI-generated placeholders.
+
+### Summary
+| Variable | Purpose | Enrichment skipped when missing |
+|----------|---------|---------------------------------|
+| `AMADEUS_API_KEY` | Flights (Amadeus test) | Yes |
+| `AMADEUS_API_SECRET` | Flights (Amadeus test) | Yes |
+| `LITEAPI_KEY` | Hotels (LiteAPI) | Yes |
+| `OPENTRIPMAP_API_KEY` | Activities (OpenTripMap) | Yes |
+
+## Where each result is fetched from (API vs Gemini)
+
+You can tell exactly where each recommendation came from by the **`source`** field on each item (and the "Source" badge in the itinerary UI).
+
+| Source value   | Meaning |
+|----------------|--------|
+| **gemini**     | AI-generated placeholder. No external API; from `generateTripPlan()` in `server/services/gemini.ts`. |
+| **amadeus**    | Real flight data from **Amadeus Flight Offers Search API** (`server/services/amadeus.ts`). Used when `AMADEUS_API_KEY` and `AMADEUS_API_SECRET` are set. |
+| **liteapi**    | Real hotel data from **LiteAPI** (`server/services/hotels.ts`). Used when `LITEAPI_KEY` is set. |
+| **opentripmap**| Real activities/POI from **OpenTripMap** (`server/services/activities.ts`). Used when `OPENTRIPMAP_API_KEY` is set. |
+
+**Flow:**  
+1. Plan structure and placeholders come from **Gemini** (`/api/generate-trip` → `generateTripPlan`).  
+2. Optional enrichment runs in **enrich-trip.ts**: it calls Amadeus, LiteAPI, and OpenTripMap (when keys exist) and replaces matching slots in the plan.  
+3. Replaced items get `source: "amadeus" | "liteapi" | "opentripmap"`; anything left from the AI plan keeps `source: "gemini"`.

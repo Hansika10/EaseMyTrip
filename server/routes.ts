@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { tripRequestSchema, vibesRequestSchema, chatMessageSchema } from "@shared/schema";
 import { generateVibes, generateTripPlan, chatWithAI, detectTripAction, detectItineraryPlanningIntent, extractTripDetailsFromMessage, executeModification, analyzeBudgetOptimization, generateSmartRecommendations, generateUserInsights } from "./services/gemini";
+import { enrichTripPlan } from "./services/enrich-trip";
 import { textToSpeech } from "./services/elevenlabs";
 import { textToSpeechIndian } from "./services/sonic";
 
@@ -135,6 +136,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('- Advanced Options:', tripRequest.advancedOptions);
       console.log('- GEMINI_API_KEY present:', !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim() !== '');
       
+      // --- WHERE THE RESULT COMES FROM ---
+      // Step 1: Plan structure and placeholder recommendations come from GEMINI (AI).
       const generatedPlan = await generateTripPlan(
         tripRequest.from,
         tripRequest.to,
@@ -147,13 +150,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         tripRequest.travelers
       );
 
+      // Step 2: Optional enrichment from EXTERNAL APIs (when keys are set):
+      // - Flights: Amadeus (AMADEUS_API_KEY + AMADEUS_API_SECRET)
+      // - Hotels: LiteAPI (LITEAPI_KEY)
+      // - Activities: OpenTripMap (OPENTRIPMAP_API_KEY)
+      // Each recommendation has a "source" field: "gemini" | "amadeus" | "liteapi" | "opentripmap".
+      let enrichedPlan = generatedPlan;
+      try {
+        enrichedPlan = await enrichTripPlan(tripRequest, generatedPlan);
+      } catch (enrichError) {
+        console.warn("Enrichment failed, using Gemini plan only:", enrichError);
+      }
+
       // Store the trip (for now, using a dummy user ID)
       const userId = "default-user";
       const trip = await storage.createTrip({
         ...tripRequest,
         userId,
-        title: generatedPlan.title,
-        days: generatedPlan.days,
+        title: enrichedPlan.title,
+        days: enrichedPlan.days,
       });
       
       // Store customRequest and advancedOptions as metadata (for display purposes)
@@ -165,10 +180,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Create cart items from recommendations (optimized with batch creation)
-      if (generatedPlan.days) {
+      if (enrichedPlan.days) {
         const allCartItems: any[] = [];
         
-        for (const day of generatedPlan.days) {
+        for (const day of enrichedPlan.days) {
           // Handle both 'recommendations' and 'items' (for compatibility)
           const recs = day.recommendations || day.items || [];
           if (Array.isArray(recs) && recs.length > 0) {
@@ -193,13 +208,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Cache the generated plan
-      tripPlanCache.set(cacheKey, { plan: generatedPlan, timestamp: Date.now() });
+      // Cache the generated plan (enriched)
+      tripPlanCache.set(cacheKey, { plan: enrichedPlan, timestamp: Date.now() });
       console.log('Cached trip plan for future requests');
 
-      res.json({ trip, plan: generatedPlan });
+      res.json({ trip, plan: enrichedPlan });
     } catch (error) {
-      console.error("Error generating trip:", error);
+      const err = error as Error;
+      console.error("Error generating trip:", err?.message ?? error);
+      if (err?.stack) console.error(err.stack);
       res.status(500).json({ error: "Failed to generate trip plan" });
     }
   });
